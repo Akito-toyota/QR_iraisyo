@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原反 QR 照合</title>
+
+<!-- ✅ QR読み取り -->
+<script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
+
+<!-- ✅ Excel -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+<style>
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #f5f7fb;
+  padding: 20px;
+}
+
+h2 {
+  color: #333;
+}
+
+button {
+  padding: 12px 18px;
+  border-radius: 8px;
+  border: none;
+  background: #4f6df5;
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  margin-right: 5px;
+}
+
+button:disabled {
+  background: #aaa;
+}
+
+input[type="file"] {
+  background: white;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+}
+
+table {
+  width: 100%;
+  max-width: 700px;
+  background: white;
+  border-radius: 10px;
+  border-collapse: collapse;
+  margin-top: 10px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+th {
+  background: #4f6df5;
+  color: white;
+  padding: 10px;
+}
+
+td {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.pending { background: #fafafa; }
+.done { background: #e6f8ea; font-weight: 600; }
+
+#reader {
+  margin-top: 15px;
+  max-width: 320px;
+  background: white;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+#reader video {
+  width: 100%;
+  border-radius: 10px;
+}
+
+#message {
+  margin-top: 12px;
+  font-size: 18px;
+  font-weight: 600;
+}
+</style>
+</head>
+
+<body>
+
+<h2>原反 QR 照合</h2>
+
+<input type="file" id="excelFile" accept=".xlsx,.xlsm"><br><br>
+
+<button id="startBtn">📷 カメラ起動</button>
+<button id="stopBtn" disabled>⏹ 停止</button>
+
+<table>
+<thead>
+<tr>
+  <th>番号</th>
+  <th>内容</th>
+  <th>状態</th>
+</tr>
+</thead>
+<tbody id="list"></tbody>
+</table>
+
+<p>読み取ったQR：<strong id="qrText">未読込</strong></p>
+<div id="message"></div>
+
+<div id="reader"></div>
+
+<script>
+let rows = [];
+let scanned = new Set();
+let qr = null;
+
+const tbody = document.getElementById("list");
+const messageEl = document.getElementById("message");
+const qrTextEl = document.getElementById("qrText");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+
+/* =====================
+   Excel読み込み
+===================== */
+document.getElementById("excelFile").addEventListener("change", e => {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const wb = XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
+    const sheet = wb.Sheets["QRコードリスト"];
+    if (!sheet) {
+      alert("シート『QRコードリスト』が見つかりません");
+      return;
+    }
+
+    const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+    rows = data
+      .filter(r => r[0] && r[1])
+      .map(r => ({ a: r[0], b: r[1], done: false }));
+
+    scanned.clear();
+    messageEl.textContent = "";
+    render();
+  };
+  reader.readAsArrayBuffer(e.target.files[0]);
+});
+
+/* =====================
+   表示更新
+===================== */
+function render() {
+  tbody.innerHTML = "";
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.className = r.done ? "done" : "pending";
+    tr.innerHTML = `
+      <td>${r.a}</td>
+      <td>${r.b}</td>
+      <td>${r.done ? "✅ 完了" : "⏳ 未取得"}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  if (rows.length && rows.every(r => r.done)) {
+    messageEl.textContent = "🎉 全ての原反照合が完了しました";
+    messageEl.style.color = "green";
+    stopCamera();
+  }
+}
+
+/* =====================
+   カメラ起動（PC / iPhone対応）
+===================== */
+startBtn.addEventListener("click", async () => {
+  if (!qr) qr = new Html5Qrcode("reader");
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  try {
+    await qr.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: 250, aspectRatio: 1.0 },
+      text => {
+        qrTextEl.textContent = text;
+
+        if (scanned.has(text)) return;
+
+        const hit = rows.find(r => r.b === text && !r.done);
+        if (hit) {
+          hit.done = true;
+          scanned.add(text);
+          navigator.vibrate?.(200);
+          messageEl.textContent = "";
+          render();
+        } else {
+          messageEl.textContent = "❌ 一致しません";
+          messageEl.style.color = "red";
+        }
+      }
+    );
+  } catch (e) {
+    alert("カメラ起動失敗：" + e);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+});
+
+/* =====================
+   カメラ停止
+===================== */
+stopBtn.addEventListener("click", stopCamera);
+
+async function stopCamera() {
+  if (qr) {
+    await qr.stop();
+    await qr.clear();
+  }
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+</script>
+
+</body>
+</html>
